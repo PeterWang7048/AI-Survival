@@ -29,8 +29,3 @@
 
 - Welcome everyone to participate and create stronger AI players
 - **Seeking Help**: The current game speed is a bottleneck; contributions to performance optimization are highly welcome! 
-=======
-# AI-Survival
-Multi-Agent AI Survival Game
->>>>>>> 57c65bca5f41e8f64c072241f50ad7f83f8b1d2d
-
