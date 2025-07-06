@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # AI-Survival
 ## 🚀 Quick Start Guide
 
