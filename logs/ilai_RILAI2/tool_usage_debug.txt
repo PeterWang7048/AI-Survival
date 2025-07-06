@@ -1,0 +1,9 @@
+🔧 RILAI2 工具使用: 石头 对 ground_plant 成功=True 收益/伤害=7 总成功率=100.0%
+🔧 RILAI2 工具使用: 长矛 对 Strawberry 成功=True 收益/伤害=5 总成功率=100.0%
+🔧 RILAI2 工具使用: 石头 对 ground_plant 成功=True 收益/伤害=7 总成功率=100.0%
+🔧 RILAI2 工具使用: 石头 对 ground_plant 成功=True 收益/伤害=7 总成功率=100.0%
+🔧 RILAI2 工具使用: 长矛 对 Strawberry 成功=True 收益/伤害=5 总成功率=100.0%
+🔧 RILAI2 工具使用: 石头 对 ground_plant 成功=True 收益/伤害=7 总成功率=100.0%
+🔧 RILAI2 工具使用: 石头 对 ground_plant 成功=True 收益/伤害=7 总成功率=100.0%
+🔧 RILAI2 工具使用: 长矛 对 Strawberry 成功=True 收益/伤害=5 总成功率=100.0%
+🔧 RILAI2 工具使用: 石头 对 ground_plant 成功=True 收益/伤害=7 总成功率=100.0%

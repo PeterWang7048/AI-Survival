@@ -1,0 +1,3 @@
+🔧 ILAI3 工具使用: 弓箭 对 ground_plant 成功=True 收益/伤害=7 总成功率=100.0%
+🔧 ILAI3 工具使用: 铁锹 对 Strawberry 成功=True 收益/伤害=5 总成功率=100.0%
+🔧 ILAI3 工具使用: 长矛 对 ground_plant 成功=True 收益/伤害=7 总成功率=100.0%

@@ -1,0 +1,2 @@
+🔧 ILAI1 工具使用: 长矛 对 ground_plant 成功=True 收益/伤害=7 总成功率=100.0%
+🔧 ILAI1 工具使用: 长矛 对 ToxicStrawberry 成功=False 收益/伤害=0 总成功率=50.0%
