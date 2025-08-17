@@ -530,6 +530,14 @@ class FiveLibrarySystem:
         }
         
         try:
+            # 0. 预修复：为关键字段提供兜底，避免因空值导致整体拒绝
+            try:
+                # 动作为空时兜底为 unknown_action（后续规范化为小写）
+                if not getattr(experience, 'action', None) or (isinstance(experience.action, str) and not experience.action.strip()):
+                    experience.action = 'unknown_action'
+                    validation_result['warnings'].append("字段 'action' 为空，已自动填充为 unknown_action")
+            except Exception:
+                pass
             # 1. 必填字段检查
             required_fields = ['environment', 'object', 'characteristics', 'action', 'tools', 'result', 'player_id']
             for field in required_fields:

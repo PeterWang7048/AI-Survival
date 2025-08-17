@@ -1,4 +1,5 @@
-# AI-Survival
+# AI Survival Game
+
 ## 🚀 Quick Start Guide
 
 - **Launch Game**: `python main.py`

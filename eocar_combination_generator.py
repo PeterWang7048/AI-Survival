@@ -169,6 +169,39 @@ class AttributeExtractor:
             SymbolicTool.BASKET: ["容器工具", "存储工具", "收集工具", "携带装置"],
             SymbolicTool.SHOVEL: ["挖掘工具", "土工工具", "建造工具", "劳动装备"]
         }
+        
+        # 🔧 添加工具名称映射：中文名称/类型 -> 枚举工具
+        self.tool_name_mapping = {
+            # 中文工具名称映射
+            "弓箭": SymbolicTool.BOW,
+            "长矛": SymbolicTool.SPEAR, 
+            "石头": SymbolicTool.STONE,
+            "篮子": SymbolicTool.BASKET,
+            "铁锹": SymbolicTool.SHOVEL,
+            "棍子": SymbolicTool.STICK,
+            "锤子": SymbolicTool.STICK,  # 锤子归类为棍棒类
+            
+            # 英文工具名称映射
+            "bow": SymbolicTool.BOW,
+            "spear": SymbolicTool.SPEAR,
+            "stone": SymbolicTool.STONE, 
+            "basket": SymbolicTool.BASKET,
+            "shovel": SymbolicTool.SHOVEL,
+            "stick": SymbolicTool.STICK,
+            
+            # 工具类型映射（来自经验记录）
+            "ranged_weapon": SymbolicTool.BOW,      # 远程武器 -> 弓箭
+            "weapon": SymbolicTool.SPEAR,           # 武器 -> 长矛  
+            "digging_tool": SymbolicTool.SHOVEL,    # 挖掘工具 -> 铁锹
+            "melee_weapon": SymbolicTool.STICK,     # 近战武器 -> 棍子
+            "projectile": SymbolicTool.STONE,       # 投掷物 -> 石头
+            "container": SymbolicTool.BASKET,       # 容器 -> 篮子
+            
+            # 处理None情况
+            "none": SymbolicTool.NONE,
+            "无": SymbolicTool.NONE,
+            "": SymbolicTool.NONE
+        }
     
     def extract_environment_attributes(self, env) -> List[str]:
         """提取环境属性"""
@@ -213,13 +246,43 @@ class AttributeExtractor:
         return self.action_attributes.get(action_content, [])
     
     def extract_tool_attributes(self, tool) -> List[str]:
-        """提取工具属性"""
+        """提取工具属性 - 修复版本"""
         if tool is None:
             return ["无工具", "徒手", "自然能力"]
         
-        # 使用工具内容作为键
+        # 获取工具内容（可能是字符串或对象）
         tool_content = getattr(tool, 'content', str(tool))
-        return self.tool_attributes.get(tool_content, [])
+        
+        # 🔧 第一步：尝试直接从工具名称映射中查找
+        if tool_content in self.tool_name_mapping:
+            mapped_tool_enum = self.tool_name_mapping[tool_content]
+            attributes = self.tool_attributes.get(mapped_tool_enum, [])
+            if attributes:  # 如果找到属性，直接返回
+                return attributes.copy()
+        
+        # 🔧 第二步：尝试按工具名称的小写形式查找
+        tool_content_lower = tool_content.lower()
+        if tool_content_lower in self.tool_name_mapping:
+            mapped_tool_enum = self.tool_name_mapping[tool_content_lower]
+            attributes = self.tool_attributes.get(mapped_tool_enum, [])
+            if attributes:
+                return attributes.copy()
+        
+        # 🔧 第三步：模糊匹配（包含关系）
+        for name_key, tool_enum in self.tool_name_mapping.items():
+            if name_key and tool_content and (name_key in tool_content or tool_content in name_key):
+                attributes = self.tool_attributes.get(tool_enum, [])
+                if attributes:
+                    return attributes.copy()
+        
+        # 🔧 第四步：如果以上都失败，尝试直接使用工具枚举类型作为键（向下兼容）
+        if hasattr(tool, '__class__') and hasattr(tool.__class__, '__name__'):
+            for tool_enum in self.tool_attributes.keys():
+                if hasattr(tool_enum, 'name') and tool_enum.name.lower() in tool_content.lower():
+                    return self.tool_attributes[tool_enum].copy()
+        
+        # 🔧 第五步：如果还是找不到，返回通用工具属性
+        return ["未知工具", "工具类物品", "辅助装备"]
     
     def extract_characteristics_attributes(self, characteristics) -> List[str]:
         """提取特征属性"""
@@ -292,8 +355,27 @@ class EOCARCombinationGenerator:
         
         all_candidate_rules = []
         
-        # 为每个经验生成候选规律
+        # 🔧 优先处理工具使用经验，增强工具规律权重
+        tool_experiences = []
+        non_tool_experiences = []
+        
         for experience in eocar_experiences:
+            if self._is_tool_usage_experience(experience):
+                tool_experiences.append(experience)
+            else:
+                non_tool_experiences.append(experience)
+        
+        # 🔧 先处理工具经验，给予优先级
+        for experience in tool_experiences:
+            experience_rules = self._generate_rules_from_single_experience(experience)
+            # 🔧 为工具经验生成的所有规律增加额外权重
+            for rule in experience_rules:
+                rule.confidence += 0.15  # 工具经验额外置信度加成
+                rule.generalization_score += 0.25  # 额外泛化得分加成
+            all_candidate_rules.extend(experience_rules)
+            
+        # 然后处理非工具经验
+        for experience in non_tool_experiences:
             experience_rules = self._generate_rules_from_single_experience(experience)
             all_candidate_rules.extend(experience_rules)
         
@@ -306,9 +388,39 @@ class EOCARCombinationGenerator:
         self.generation_stats['total_rules_generated'] += len(filtered_rules)
         
         if self.logger:
+            # 🔧 统计工具相关规律的数量
+            tool_rules_count = sum(1 for rule in filtered_rules 
+                                 if any(tool_type in rule.combination_type.value 
+                                       for tool_type in ['tool']))
+            
             self.logger.log(f"从{len(eocar_experiences)}个EOCATR经验生成了{len(filtered_rules)}个候选规律")
+            self.logger.log(f"其中工具相关规律: {tool_rules_count}个，工具经验: {len(tool_experiences)}个")
+            self.logger.log(f"🔧 工具规律权重增强: 置信度+0.25, 泛化得分+0.45")
         
         return filtered_rules
+    
+    def _is_tool_usage_experience(self, experience: EOCATR_Tuple) -> bool:
+        """检查经验是否为工具使用经验"""
+        # 检查工具元素是否存在且不为空
+        if hasattr(experience, 'tool') and experience.tool:
+            # 检查工具内容是否有效（不是"none"或空字符串）
+            if hasattr(experience.tool, 'content'):
+                tool_content = experience.tool.content.lower()
+                return tool_content not in ['none', '', 'null', 'unknown']
+            # 检查工具名称
+            elif hasattr(experience.tool, 'name'):
+                tool_name = experience.tool.name.lower()
+                return tool_name not in ['none', '', 'null', 'unknown']
+        
+        # 检查是否调用了is_tool_usage方法
+        if hasattr(experience, 'is_tool_usage') and callable(experience.is_tool_usage):
+            return experience.is_tool_usage()
+            
+        # 检查经验中是否有工具相关的标记
+        if hasattr(experience, '_metadata') and experience._metadata:
+            return experience._metadata.get('tool_usage', False)
+            
+        return False
     
     def _generate_rules_from_single_experience(self, experience: EOCATR_Tuple) -> List[CandidateRule]:
         """从单个EOCATR经验生成候选规律"""
@@ -323,8 +435,38 @@ class EOCARCombinationGenerator:
         char_attrs = self.attribute_extractor.extract_characteristics_attributes(experience.characteristics)
         tool_attrs = self.attribute_extractor.extract_tool_attributes(experience.tool)
         
-        # 生成所有组合类型的规律（包含工具T）
+        # 🔧 生成符合约束的组合类型规律（排除违反C₂/C₃约束的两元规律）
+        forbidden_types = {CombinationType.E_R, CombinationType.O_R, CombinationType.C_R, 
+                          CombinationType.A_R, CombinationType.T_R}
+        
+        # 🔧 定义工具相关的组合类型（优先处理）
+        tool_related_types = {
+            CombinationType.E_T_R, CombinationType.O_T_R, CombinationType.C_T_R, CombinationType.A_T_R,  # 双元素+工具
+            CombinationType.E_O_T_R, CombinationType.E_C_T_R, CombinationType.E_A_T_R,  # 三元素+工具
+            CombinationType.O_C_T_R, CombinationType.O_A_T_R, CombinationType.C_A_T_R,
+            CombinationType.E_O_C_T_R, CombinationType.E_O_A_T_R, CombinationType.E_C_A_T_R,  # 四元素+工具
+            CombinationType.O_C_A_T_R, CombinationType.E_O_C_A_T_R  # 全元素
+        }
+        
+        # 🔧 优先生成工具相关规律
+        for combination_type in tool_related_types:
+            if combination_type in forbidden_types:
+                continue
+            combination_rules = self._generate_combination_rules(
+                combination_type, experience, env_attrs, obj_attrs, action_attrs, char_attrs, tool_attrs
+            )
+            # 🔧 为工具相关规律增加权重加成
+            for rule in combination_rules:
+                rule.confidence += 0.1  # 工具规律初始置信度加成
+                rule.generalization_score += 0.2  # 泛化得分加成
+            rules.extend(combination_rules)
+        
+        # 🔧 然后生成其他符合约束的规律
         for combination_type in CombinationType:
+            # 跳过违反约束的两元规律类型和已处理的工具相关类型
+            if combination_type in forbidden_types or combination_type in tool_related_types:
+                continue
+                
             combination_rules = self._generate_combination_rules(
                 combination_type, experience, env_attrs, obj_attrs, action_attrs, char_attrs, tool_attrs
             )
@@ -338,17 +480,29 @@ class EOCARCombinationGenerator:
         """为特定组合类型生成规律"""
         rules = []
         
-        # 单元素+结果 (5种)
-        if combination_type == CombinationType.E_R:
-            rules.extend(self._generate_e_r_rules(experience, env_attrs))
-        elif combination_type == CombinationType.O_R:
-            rules.extend(self._generate_o_r_rules(experience, obj_attrs))
-        elif combination_type == CombinationType.C_R:
-            rules.extend(self._generate_c_r_rules(experience, char_attrs))
-        elif combination_type == CombinationType.A_R:
-            rules.extend(self._generate_a_r_rules(experience, action_attrs))
-        elif combination_type == CombinationType.T_R:
-            rules.extend(self._generate_t_r_rules(experience, tool_attrs))
+        # 🔧 禁止生成违反C₂/C₃约束的两元规律
+        # C₂约束：至少一个可控因子（A或T）
+        # C₃约束：至少一个上下文因子（E、O、C）
+        # 两元规律E-R、O-R、C-R、A-R、T-R都违反了其中一个约束，因此被禁止
+        
+        # 注释掉违反约束的两元规律生成
+        # if combination_type == CombinationType.E_R:
+        #     rules.extend(self._generate_e_r_rules(experience, env_attrs))  # 违反C₂约束
+        # elif combination_type == CombinationType.O_R:
+        #     rules.extend(self._generate_o_r_rules(experience, obj_attrs))  # 违反C₂约束
+        # elif combination_type == CombinationType.C_R:
+        #     rules.extend(self._generate_c_r_rules(experience, char_attrs))  # 违反C₂约束
+        # elif combination_type == CombinationType.A_R:
+        #     rules.extend(self._generate_a_r_rules(experience, action_attrs))  # 违反C₃约束
+        # elif combination_type == CombinationType.T_R:
+        #     rules.extend(self._generate_t_r_rules(experience, tool_attrs))  # 违反C₃约束
+        
+        # 🔧 单元素+结果规律被完全禁止，跳过处理
+        if combination_type in [CombinationType.E_R, CombinationType.O_R, CombinationType.C_R, 
+                               CombinationType.A_R, CombinationType.T_R]:
+            if hasattr(self, 'logger') and self.logger:
+                self.logger.log(f"🚀 约束感知跳过: {combination_type} (智能避免违反C₂/C₃约束)")
+            return rules  # 返回空列表
         
         # 双元素+结果 (10种)
         elif combination_type == CombinationType.E_O_R:

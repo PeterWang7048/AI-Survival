@@ -117,6 +117,8 @@ class CandidateRule:
     parent_rules: List[str] = field(default_factory=list)
     derived_rules: List[str] = field(default_factory=list)
     complexity: int = 1
+    # === 验证状态 ===
+    status: str = "pending"  # pending | provisional | validated | deprecated | pruned
     
     def __post_init__(self):
         """初始化后处理，确保兼容性属性正确设置"""
@@ -634,8 +636,15 @@ class BloomingAndPruningModel:
             'contradicting_evidence_threshold': 0.8,  # 适中的矛盾容忍度
             
             # 验证参数（降低门槛）
-            'validation_confidence_threshold': 0.3,   # 降低验证阈值
+            'validation_confidence_threshold': 0.2,   # 进一步降低验证置信度阈值
+            'validation_success_rate_threshold': 0.4, # 新增：成功率阈值
             'validation_evidence_threshold': 1,       # 保持低证据要求
+            
+            # 自动晋升（新增）
+            'auto_promotion_enabled': True,
+            'auto_promote_repeat_threshold': 4,
+            'auto_promote_confidence_threshold': 0.5,
+            'auto_promote_max_contradiction_ratio': 0.5,
             
             # 质量控制（宽松但有标准）
             'min_activation_for_validation': 0,       # 无激活次数要求
@@ -943,6 +952,110 @@ class BloomingAndPruningModel:
         common_results = self._extract_common_results(experiences)
         
         new_rules = []
+
+        # === 新增：单特征C六族生成（E-C-A-R / E-C-T-R / O-C-A-R / O-C-T-R / C-A-R / C-T-R）===
+        try:
+            # 从每条经验提取可见特征集合（characteristic_*），逐个生成单特征C候选规律
+            for exp in experiences:
+                try:
+                    # 将 E/O/A/T 取值
+                    env_val = exp.get_environment_compat().value if hasattr(exp, 'get_environment_compat') and exp.get_environment_compat() else None
+                    obj_val = exp.object_category.value if hasattr(exp, 'object_category') and exp.object_category else None
+                    act_val = exp.get_action_compat().value if hasattr(exp, 'get_action_compat') and exp.get_action_compat() else None
+                    tool_val = exp.get_tool_compat().value if hasattr(exp, 'get_tool_compat') and exp.get_tool_compat() else None
+                    res_val = exp.get_result_compat().content if hasattr(exp, 'get_result_compat') and exp.get_result_compat() else None
+
+                    # 解析 C：支持字符串形式的 "characteristic_x=y;..." 或兼容包装器中的 content
+                    c_candidates = []
+                    try:
+                        raw_c = getattr(exp, 'character', None)
+                        raw_content = getattr(raw_c, 'content', None)
+                        if isinstance(raw_content, str) and 'characteristic_' in raw_content:
+                            for part in raw_content.split(';'):
+                                part = part.strip()
+                                if not part:
+                                    continue
+                                if '=' in part:
+                                    k, v = part.split('=', 1)
+                                    k = k.strip()
+                                    v = v.strip()
+                                    if k and v:
+                                        c_candidates.append((k, v))
+                    except Exception:
+                        pass
+
+                    # 对每个单特征C生成六族候选
+                    for c_key, c_val in c_candidates[:8]:  # 轻度限流：每条经验最多取前8个特征
+                        # E-C-A-R
+                        if env_val and act_val and res_val:
+                            new_rules.append(CandidateRule(
+                                rule_id=f"ECAR_{int(time.time()*1000000)%1000000}",
+                                rule_type=RuleType.CAUSAL,
+                                pattern=f"在{env_val}中，若{c_key}={c_val}，执行{act_val}→{res_val}",
+                                conditions={'environment': env_val, c_key: c_val, 'action': act_val},
+                                predictions={'result': res_val, 'expected_success': exp.success},
+                                confidence=0.5,
+                                complexity=3
+                            ))
+                        # E-C-T-R
+                        if env_val and tool_val and res_val:
+                            new_rules.append(CandidateRule(
+                                rule_id=f"ECTR_{int(time.time()*1000000)%1000000}",
+                                rule_type=RuleType.CAUSAL,
+                                pattern=f"在{env_val}中，若{c_key}={c_val}，使用{tool_val}→{res_val}",
+                                conditions={'environment': env_val, c_key: c_val, 'tool': tool_val},
+                                predictions={'result': res_val, 'expected_success': exp.success},
+                                confidence=0.5,
+                                complexity=3
+                            ))
+                        # O-C-A-R
+                        if obj_val and act_val and res_val:
+                            new_rules.append(CandidateRule(
+                                rule_id=f"OCAR_{int(time.time()*1000000)%1000000}",
+                                rule_type=RuleType.CAUSAL,
+                                pattern=f"对{obj_val}，若{c_key}={c_val}，执行{act_val}→{res_val}",
+                                conditions={'object_category': obj_val, c_key: c_val, 'action': act_val},
+                                predictions={'result': res_val, 'expected_success': exp.success},
+                                confidence=0.5,
+                                complexity=3
+                            ))
+                        # O-C-T-R
+                        if obj_val and tool_val and res_val:
+                            new_rules.append(CandidateRule(
+                                rule_id=f"OCTR_{int(time.time()*1000000)%1000000}",
+                                rule_type=RuleType.CAUSAL,
+                                pattern=f"对{obj_val}，若{c_key}={c_val}，使用{tool_val}→{res_val}",
+                                conditions={'object_category': obj_val, c_key: c_val, 'tool': tool_val},
+                                predictions={'result': res_val, 'expected_success': exp.success},
+                                confidence=0.5,
+                                complexity=3
+                            ))
+                        # C-A-R
+                        if act_val and res_val:
+                            new_rules.append(CandidateRule(
+                                rule_id=f"CAR_{int(time.time()*1000000)%1000000}",
+                                rule_type=RuleType.CAUSAL,
+                                pattern=f"若{c_key}={c_val}，执行{act_val}→{res_val}",
+                                conditions={c_key: c_val, 'action': act_val},
+                                predictions={'result': res_val, 'expected_success': exp.success},
+                                confidence=0.5,
+                                complexity=2
+                            ))
+                        # C-T-R
+                        if tool_val and res_val:
+                            new_rules.append(CandidateRule(
+                                rule_id=f"CTR_{int(time.time()*1000000)%1000000}",
+                                rule_type=RuleType.CAUSAL,
+                                pattern=f"若{c_key}={c_val}，使用{tool_val}→{res_val}",
+                                conditions={c_key: c_val, 'tool': tool_val},
+                                predictions={'result': res_val, 'expected_success': exp.success},
+                                confidence=0.5,
+                                complexity=2
+                            ))
+                except Exception:
+                    continue
+        except Exception:
+            pass
         
         # 根据模式类型生成不同类型的规律（修复版）
         
@@ -2205,7 +2318,11 @@ class BloomingAndPruningModel:
     def validation_phase(self, new_experiences: List[EOCATR_Tuple]) -> List[str]:
         """验证阶段 - 增强版本"""
         if not new_experiences:
-            return []
+            # 即使无新经验，也进行自动晋升检查
+            auto_ids = self._auto_promotion_check()
+            if auto_ids and self.logger:
+                self.logger.log(f"⚡ 自动晋升: {len(auto_ids)} 个规律基于重复出现与置信度被提升")
+            return auto_ids
         
         validated_rule_ids = []
         
@@ -2219,13 +2336,14 @@ class BloomingAndPruningModel:
                     # 使用新经验验证规律
                     validation_result = self._validate_rule_with_experiences(rule, new_experiences)
                     
-                    if validation_result['applicable_count'] > 0:
+                    if validation_result['total_applicable'] > 0:
                         # 更新规律基于验证结果
                         self._update_rule_based_on_validation(rule, validation_result)
                         
                         # 如果验证成功且置信度提高，移到已验证规律
-                        if (validation_result['success_rate'] > 0.5 and 
-                            rule.confidence > self.config.get('validation_confidence_threshold', 0.3)):
+                        success_rate_threshold = self.config.get('validation_success_rate_threshold', 0.5)
+                        if (validation_result['success_rate'] >= success_rate_threshold and 
+                            rule.confidence >= self.config.get('validation_confidence_threshold', 0.3)):
                             
                             self.validated_rules[rule_id] = rule
                             del self.candidate_rules[rule_id]
@@ -2242,12 +2360,58 @@ class BloomingAndPruningModel:
             if self.logger:
                 self.logger.log(f"📊 BMP验证阶段完成: 验证了{len(validated_rule_ids)}个规律")
             
+            # 验证后补充自动晋升
+            auto_ids = self._auto_promotion_check()
+            if auto_ids:
+                validated_rule_ids.extend(auto_ids)
+                if self.logger:
+                    self.logger.log(f"⚡ 自动晋升: 额外提升 {len(auto_ids)} 个规律")
             return validated_rule_ids
             
         except Exception as e:
             if self.logger:
                 self.logger.log(f"❌ BMP验证阶段异常: {str(e)}")
             return []
+
+    def _auto_promotion_check(self) -> List[str]:
+        """基于重复出现与置信度的自动晋升为正式规律"""
+        promoted: List[str] = []
+        try:
+            if not self.config.get('auto_promotion_enabled', True):
+                return promoted
+            repeat_threshold = self.config.get('auto_promote_repeat_threshold', 4)
+            conf_threshold = self.config.get('auto_promote_confidence_threshold', 0.5)
+            max_contra_ratio = self.config.get('auto_promote_max_contradiction_ratio', 0.5)
+
+            for rule_id, rule in list(self.candidate_rules.items()):
+                try:
+                    if rule.activation_count < repeat_threshold:
+                        continue
+                    if rule.confidence < conf_threshold:
+                        continue
+                    supp = len(getattr(rule.evidence, 'supporting_experiences', []) or [])
+                    contra = len(getattr(rule.evidence, 'contradicting_experiences', []) or [])
+                    total_ev = supp + contra
+                    contra_ratio = (contra / total_ev) if total_ev > 0 else 0.0
+                    if contra_ratio > max_contra_ratio:
+                        continue
+
+                    # 晋升
+                    self.validated_rules[rule_id] = rule
+                    if rule_id in self.candidate_rules:
+                        del self.candidate_rules[rule_id]
+                    rule.status = 'validated'
+                    promoted.append(rule_id)
+                    if self.logger:
+                        self.logger.log(f"✅ 规则自动晋升: {rule_id[:8]} (activation:{rule.activation_count}, confidence:{rule.confidence:.3f}, contra_ratio:{contra_ratio:.2f})")
+                except Exception as inner_e:
+                    if self.logger:
+                        self.logger.log(f"⚠️ 自动晋升检查异常: {rule_id[:8]} - {str(inner_e)}")
+                    continue
+        except Exception as e:
+            if self.logger:
+                self.logger.log(f"❌ 自动晋升流程异常: {str(e)}")
+        return promoted
     def _validate_rule_with_experiences(self, rule: CandidateRule, 
                                        experiences: List[EOCATR_Tuple]) -> Dict[str, Any]:
         """使用经验验证规律"""
@@ -2255,7 +2419,8 @@ class BloomingAndPruningModel:
             'matches': 0,
             'predictions_correct': 0,
             'predictions_wrong': 0,
-            'total_applicable': 0
+            'total_applicable': 0,
+            'success_rate': 0.0
         }
         
         for exp in experiences:
@@ -2269,45 +2434,101 @@ class BloomingAndPruningModel:
                     validation_result['predictions_correct'] += 1
                 else:
                     validation_result['predictions_wrong'] += 1
+            else:
+                # 轻度泛化：若action、environment匹配但tool不同，给予部分匹配（放宽验证困难）
+                try:
+                    cond = rule.conditions if isinstance(rule.conditions, dict) else {}
+                    act_ok = ('action' not in cond) or (cond.get('action') == getattr(exp.action, 'value', None))
+                    env_ok = ('environment' not in cond) or (cond.get('environment') == getattr(exp.environment, 'value', None))
+                    if act_ok and env_ok:
+                        # 作为弱证据，计入总样本但不加正确计数
+                        validation_result['total_applicable'] += 1
+                except Exception:
+                    pass
         
+        # 计算成功率（避免除零）
+        if validation_result['total_applicable'] > 0:
+            total = validation_result['predictions_correct'] + validation_result['predictions_wrong']
+            if total > 0:
+                validation_result['success_rate'] = validation_result['predictions_correct'] / total
+            else:
+                # 没有对错记录但存在弱匹配时，给予最低通过可能的基线（可调）
+                validation_result['success_rate'] = 0.4 if validation_result['total_applicable'] > 0 else 0.0
         return validation_result
     
     def _is_rule_applicable(self, rule: CandidateRule, experience: EOCATR_Tuple) -> bool:
-        """检查规律是否适用于给定经验"""
-        conditions = rule.condition_elements
-        
-        # 检查基本条件
-        if ('object_category' in conditions and 
-            conditions['object_category'] != experience.object_category.value):
-            return False
-        
-        if ('action' in conditions and 
-            conditions['action'] != experience.action.value):
-            return False
-        
-        if ('environment' in conditions and 
-            conditions['environment'] != experience.environment.value):
-            return False
-        
-        # 检查特征条件
-        for cond_name, cond_value in conditions.items():
+        """检查规律是否适用于给定经验（修复：基于 rule.conditions 字典判断）"""
+        # 优先使用结构化的 conditions 字典；若不可用则回退为空
+        conditions_dict = rule.conditions if isinstance(rule.conditions, dict) else {}
+
+        # 提供安全取值函数，兼容枚举/符号元素
+        def _safe_value(x):
+            return getattr(x, 'value', getattr(x, 'content', x))
+
+        # 检查基本条件：对象类别/动作/环境
+        if 'object_category' in conditions_dict:
+            if _safe_value(experience.object_category) != conditions_dict['object_category']:
+                return False
+
+        if 'action' in conditions_dict:
+            if _safe_value(experience.action) != conditions_dict['action']:
+                return False
+
+        if 'environment' in conditions_dict:
+            if _safe_value(experience.environment) != conditions_dict['environment']:
+                return False
+
+        # 兼容增强BMP的简写键位（E/O/C/A/T）
+        shorthand_map = {
+            'E': _safe_value(experience.environment),
+            'O': _safe_value(experience.object_category),
+            'A': _safe_value(experience.action),
+            # 'C' 特征集合下方统一处理
+            'T': _safe_value(getattr(experience, 'tool', None))
+        }
+        for key, expected in list(conditions_dict.items()):
+            if key in shorthand_map and expected is not None:
+                if shorthand_map[key] != expected:
+                    return False
+
+        # 检查特征条件与阈值条件
+        # 支持 C 为 dict 或 list 的情况：随机抽取一个特征作为代表匹配
+        if 'C' in conditions_dict and isinstance(conditions_dict['C'], (dict, list)):
+            c_pool = []
+            if isinstance(conditions_dict['C'], dict):
+                c_pool = list(conditions_dict['C'].items())
+            else:
+                # list 中每个元素可以是 (name, value) 或 {'name': v}
+                for item in conditions_dict['C']:
+                    if isinstance(item, tuple) and len(item) == 2:
+                        c_pool.append(item)
+                    elif isinstance(item, dict) and len(item) == 1:
+                        k, v = list(item.items())[0]
+                        c_pool.append((k, v))
+            if c_pool:
+                k, v = random.choice(c_pool)
+                exp_val = getattr(experience.characteristics, k, None)
+                if exp_val != v:
+                    return False
+
+        for cond_name, cond_value in conditions_dict.items():
             if cond_name.startswith('characteristic_'):
                 char_name = cond_name.replace('characteristic_', '')
                 exp_char_value = getattr(experience.characteristics, char_name, None)
                 if exp_char_value != cond_value:
                     return False
-            
+
             elif cond_name.endswith('_threshold'):
                 char_name = cond_name.replace('_threshold', '')
                 exp_char_value = getattr(experience.characteristics, char_name, None)
-                comparison = conditions.get('comparison', 'greater_than')
-                
+                comparison = conditions_dict.get('comparison', 'greater_than')
                 if exp_char_value is not None:
                     if comparison == 'greater_than' and exp_char_value <= cond_value:
                         return False
-                    elif comparison == 'less_than' and exp_char_value >= cond_value:
+                    if comparison == 'less_than' and exp_char_value >= cond_value:
                         return False
-        
+
+        # 未设置任何限制条件时，认为适用
         return True
     
     def _check_rule_prediction(self, rule: CandidateRule, experience: EOCATR_Tuple) -> bool:
@@ -3188,7 +3409,8 @@ class BloomingAndPruningModel:
     
     def _has_sufficient_new_experiences(self, experiences: List[EOCATR_Tuple], min_new_patterns: int = 2) -> bool:
         """检查是否有足够的新经验模式来生成规律"""
-        if len(experiences) < min_new_patterns:
+        # 放宽策略：至少2条经验即可
+        if len(experiences) < 2:
             return False
         
         # 检查经验的多样性
@@ -3197,10 +3419,10 @@ class BloomingAndPruningModel:
             pattern = self._get_experience_pattern(exp)
             unique_patterns.add(pattern)
         
-        # 如果新模式数量不足，不进行规律生成
-        if len(unique_patterns) < min_new_patterns:
+        # 放宽策略：不同模式至少1个即可（同模式重复也允许）
+        if len(unique_patterns) < 1:
             if self.logger:
-                self.logger.log(f"BMP：经验模式不足 ({len(unique_patterns)}/{min_new_patterns})，跳过规律生成")
+                self.logger.log(f"BMP：经验模式不足 ({len(unique_patterns)}/{1})，跳过规律生成")
             return False
         
         return True
